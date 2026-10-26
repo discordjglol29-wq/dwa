@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zon#999 · Aim Trainer</title>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--red:#e1141f;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#070707;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+.disp,h1,#hud b{font-family:Anton,Impact,'Arial Narrow',sans-serif;font-weight:400}
+#ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000b;text-align:center;padding:20px}
+.box{max-width:540px;width:100%}
+h1{font-size:clamp(46px,10vw,88px);margin:0 0 6px;line-height:1}
+p{color:#cfc6c7;margin:6px 0 14px;font-size:19px}
+.row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:12px 0}
+button{font:inherit;font-weight:700;letter-spacing:.1em;font-size:17px;padding:12px 26px;border:1px solid var(--red);background:transparent;color:#fff;border-radius:3px;cursor:pointer}
+button.pri,button.on{background:var(--red)}
+button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:2px}
+label{font-size:18px}
+input{width:84px;font:inherit;font-size:18px;padding:6px;background:#111;color:#fff;border:1px solid #ffffff55;border-radius:3px;text-align:center}
+.small{font-size:15px;color:#9d9394}
+#hud{position:fixed;top:14px;left:0;right:0;display:none;justify-content:center;gap:34px;font-size:24px;pointer-events:none;text-shadow:0 0 8px #000}
+#hud b{font-size:34px;margin-left:6px}
+#cross{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000;display:none;pointer-events:none}
+a{color:#fff}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><span>TIME<b id="hT">30</b></span><span>SCORE<b id="hS">0</b></span><span>ACCURACY<b id="hA">0%</b></span></div>
+<div id="cross"></div>
+<div id="ui"><div class="box">
+  <h1>AIM TRAINER</h1>
+  <p id="msg">Pick a mode, set your sensitivity, then press Start. Press Esc to pause.</p>
+  <div class="row"><button id="mg" class="on">GRIDSHOT</button><button id="mt">TRACKING</button></div>
+  <p id="desc"></p>
+  <div class="row">
+    <label>Sensitivity <input id="sens" type="number" step="0.05" min="0.05" max="5" value="0.4"></label>
+    <label>Time <input id="dur" type="number" step="5" min="10" max="120" value="30"> s</label>
+  </div>
+  <div class="row"><button id="go" class="pri">START</button></div>
+  <p class="small">Sensitivity uses Valorant’s scale (0.07° per mouse count), so your in-game number should feel close. Needs a mouse on a computer.</p>
+  <p class="small"><a href="./">Back to my stats</a></p>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+if(typeof THREE==="undefined"){$("ui").innerHTML='<div class="box"><h1>OFFLINE</h1><p>Couldn’t load the 3D library. Check your connection and refresh.</p></div>';return}
+
+var mode="grid",sens=.4,DUR=30,state="menu",paused=false;
+var cv=$("c"),R=new THREE.WebGLRenderer({canvas:cv,antialias:true}),S=new THREE.Scene(),C=new THREE.PerspectiveCamera(70,1,.1,100);
+R.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+S.background=new THREE.Color(0x070707);S.fog=new THREE.Fog(0x070707,16,36);
+C.position.set(0,3.5,0);C.rotation.order="YXZ";
+
+// room: back wall, floor, grids
+var wall=new THREE.Mesh(new THREE.PlaneGeometry(40,40),new THREE.MeshBasicMaterial({color:0x0e0e0e}));wall.position.set(0,5,-12);S.add(wall);
+var fl=new THREE.Mesh(new THREE.PlaneGeometry(40,40),new THREE.MeshBasicMaterial({color:0x0a0a0a}));fl.rotation.x=-Math.PI/2;S.add(fl);
+var g1=new THREE.GridHelper(40,40,0x555555,0x262626);g1.position.y=.01;S.add(g1);
+var g2=new THREE.GridHelper(40,40,0x555555,0x262626);g2.rotation.x=Math.PI/2;g2.position.set(0,5,-11.99);S.add(g2);
+
+// targets
+var SG=new THREE.SphereGeometry(.45,24,16),MAT=new THREE.MeshBasicMaterial({color:0xff4d57});
+var T=[],ray=new THREE.Raycaster(),mid=new THREE.Vector2(0,0);
+function spawn(scale){
+  var p=new THREE.Vector3(),k=0;
+  do{p.set((Math.random()-.5)*12,1.8+Math.random()*5,-11.3);k++}
+  while(k<40&&T.some(function(t){return t.position.distanceTo(p)<1.6}));
+  var m=new THREE.Mesh(SG,MAT);m.position.copy(p);if(scale)m.scale.setScalar(scale);
+  m.userData.t=performance.now();S.add(m);T.push(m);return m;
+}
+function clearT(){T.forEach(function(t){S.remove(t)});T=[]}
+
+// state
+var left=0,score=0,shots=0,hits=0,react=[],onT=0,held=0,down=false,tr=null,vx=3,vy=0,chg=0;
+var yaw=0,pitch=0;
+
+function resize(){R.setSize(innerWidth,innerHeight,false);C.aspect=innerWidth/innerHeight;C.updateProjectionMatrix()}
+addEventListener("resize",resize);resize();
+
+// audio
+var ac=null;
+function beep(f,d,v){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();var o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;g.gain.value=v||.06;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+d)}catch(e){}}
+
+// menu
+function getBest(){try{return +localStorage.getItem("aim-best-"+mode)||0}catch(e){return 0}}
+function setBest(v){try{localStorage.setItem("aim-best-"+mode,String(v))}catch(e){}}
+function setMode(m){
+  mode=m;$("mg").className=m==="grid"?"on":"";$("mt").className=m==="track"?"on":"";
+  $("desc").textContent=m==="grid"?"Pop the 3 targets as fast as you can. A new one appears each time you hit.":"Hold left click and keep your crosshair on the moving target.";
+}
+$("mg").onclick=function(){setMode("grid")};
+$("mt").onclick=function(){setMode("track")};
+setMode("grid");
+try{var sv=parseFloat(localStorage.getItem("aim-sens"));if(sv)$("sens").value=sv}catch(e){}
+
+function showUI(msg,label){$("msg").textContent=msg;$("go").textContent=label;$("ui").style.display="flex";$("hud").style.display="none";$("cross").style.display="none"}
+
+function start(){
+  sens=Math.max(.05,Math.min(5,parseFloat($("sens").value)||.4));
+  DUR=Math.max(10,Math.min(120,parseInt($("dur").value,10)||30));
+  try{localStorage.setItem("aim-sens",String(sens))}catch(e){}
+  clearT();score=shots=hits=0;react=[];onT=held=0;left=DUR;
+  yaw=0;pitch=0;C.rotation.set(0,0,0);
+  if(mode==="grid"){spawn();spawn();spawn()}
+  else{tr=spawn(1.4);vx=3;vy=0;chg=.6}
+  state="play";paused=false;
+  $("ui").style.display="none";$("hud").style.display="flex";$("cross").style.display="block";
+  updHud();
+}
+function resume(){state="play";paused=false;$("ui").style.display="none";$("hud").style.display="flex";$("cross").style.display="block"}
+
+$("go").onclick=function(){
+  if(paused){resume()}else{start()}
+  try{var p=cv.requestPointerLock();if(p&&p.catch)p.catch(function(){})}catch(e){}
+};
+
+document.addEventListener("pointerlockchange",function(){
+  if(document.pointerLockElement!==cv&&state==="play"){state="menu";paused=true;down=false;showUI("Paused. Click Resume to keep going.","RESUME")}
+});
+
+// look + shoot
+document.addEventListener("mousemove",function(e){
+  if(document.pointerLockElement!==cv||state!=="play")return;
+  var k=sens*.07*Math.PI/180;
+  yaw-=e.movementX*k;pitch-=e.movementY*k;
+  pitch=Math.max(-1.2,Math.min(1.2,pitch));
+  C.rotation.set(pitch,yaw,0);
+});
+document.addEventListener("mousedown",function(e){
+  if(document.pointerLockElement!==cv||state!=="play"||e.button!==0)return;
+  down=true;
+  if(mode==="grid")shoot();
+});
+document.addEventListener("mouseup",function(){down=false});
+
+function shoot(){
+  shots++;ray.setFromCamera(mid,C);
+  var h=ray.intersectObjects(T)[0];
+  if(h){
+    hits++;score++;react.push(performance.now()-h.object.userData.t);
+    S.remove(h.object);T.splice(T.indexOf(h.object),1);spawn();beep(900,.06,.07);
+  }else beep(180,.05,.03);
+}
+
+function updHud(){
+  $("hT").textContent=Math.max(0,Math.ceil(left));
+  $("hS").textContent=score;
+  var a=mode==="grid"?(shots?hits/shots:0):(held?onT/held:0);
+  $("hA").textContent=Math.round(a*100)+"%";
+}
+
+function end(){
+  state="menu";paused=false;down=false;
+  try{document.exitPointerLock()}catch(e){}
+  var best=getBest(),nb=score>best;if(nb)setBest(score);
+  var acc=mode==="grid"?(shots?Math.round(hits/shots*100):0):(held?Math.round(onT/held*100):0);
+  var extra=mode==="grid"&&react.length?" Avg reaction "+Math.round(react.reduce(function(a,b){return a+b},0)/react.length)+" ms.":"";
+  showUI("Score "+score+(nb?" (new best!)":" (best "+best+")")+". Accuracy "+acc+"%."+extra,"PLAY AGAIN");
+}
+
+// loop
+var last=performance.now(),ray2=new THREE.Raycaster();
+function loop(now){
+  requestAnimationFrame(loop);
+  var dt=Math.min(.05,(now-last)/1000);last=now;
+  if(state==="play"){
+    left-=dt;
+    if(mode==="track"&&tr){
+      tr.position.x+=vx*dt;tr.position.y+=vy*dt;
+      if(tr.position.x>6){tr.position.x=6;vx=-Math.abs(vx)}
+      if(tr.position.x<-6){tr.position.x=-6;vx=Math.abs(vx)}
+      if(tr.position.y>7){tr.position.y=7;vy=-Math.abs(vy)}
+      if(tr.position.y<1.8){tr.position.y=1.8;vy=Math.abs(vy)}
+      chg-=dt;
+      if(chg<0){vx=(Math.random()<.5?-1:1)*(2+Math.random()*3);vy=(Math.random()-.5)*2;chg=.4+Math.random()}
+      if(down){
+        held+=dt;ray2.setFromCamera(mid,C);
+        if(ray2.intersectObject(tr).length){onT+=dt;score=Math.round(onT*100)}
+      }
+    }
+    updHud();
+    if(left<=0)end();
+  }
+  R.render(S,C);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
